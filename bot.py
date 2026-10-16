@@ -18,7 +18,7 @@ from aiogram.types import (
 
 # <<< ИЗМЕНИТЬ >>>
 # Токен, который выдаёт @BotFather
-BOT_TOKEN = "ВСТАВЬ_СЮДА_ТОКЕН"
+BOT_TOKEN = "8985064942:AAGeLx_sPYBE-Wg9MBQX73rkaSextneqTiU"
 
 
 # <<< ИЗМЕНИТЬ >>>
