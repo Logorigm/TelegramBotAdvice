@@ -1,153 +1,292 @@
-"""Бот-предложка: пользователи присылают фото/видео/гифки,
-модератор одобряет или отклоняет, одобренное публикуется в канал."""
-
 import asyncio
 import logging
-import os
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import CommandStart
-from aiogram.filters.callback_data import CallbackData
 from aiogram.types import (
-    CallbackQuery,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
     Message,
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
     ReplyParameters,
 )
-from dotenv import load_dotenv
 
-load_dotenv()  # .env
-load_dotenv(".env.example")  # запасной вариант, если .env нет
 
-BOT_TOKEN = os.environ["BOT_TOKEN"]
-MODERATOR_IDS = {int(x) for x in os.environ["MODERATOR_IDS"].replace(" ", "").split(",") if x}
-CHANNEL_ID = int(os.environ["CHANNEL_ID"])
+# ============================================================
+# НАСТРОЙКИ
+# ============================================================
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-log = logging.getLogger("moderation-bot")
+# <<< ИЗМЕНИТЬ >>>
+# Токен, который выдаёт @BotFather
+BOT_TOKEN = "ВСТАВЬ_СЮДА_ТОКЕН"
+
+
+# <<< ИЗМЕНИТЬ >>>
+# Telegram ID модераторов, которые
+# одобряют или отклоняют присланный контент
+ADMIN_IDS = {
+    1769899996,
+}
+
+
+# <<< ИЗМЕНИТЬ >>>
+# ID Telegram-канала
+CHANNEL_ID = -1003521280801
+
+
+# ============================================================
+# ЛОГИ
+# ============================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
+
+
+# ============================================================
+# ПРОВЕРКА АДМИНА
+# ============================================================
+
+def is_admin(user_id):
+
+    return user_id in ADMIN_IDS
+
+
+# ============================================================
+# КНОПКИ
+# ============================================================
+
+def moderation_keyboard(user_id, message_id):
+
+    # В кнопке храним, кто прислал и какое сообщение,
+    # чтобы потом уведомить автора о решении
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(
+                text="✅ Опубликовать",
+                callback_data=f"ok:{user_id}:{message_id}"
+            ),
+            InlineKeyboardButton(
+                text="❌ Отклонить",
+                callback_data=f"no:{user_id}:{message_id}"
+            ),
+        ]]
+    )
+
+
+def status_keyboard(text):
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(
+                text=text,
+                callback_data="done"
+            )
+        ]]
+    )
+
+
+# ============================================================
+# ИМЯ АВТОРА
+# ============================================================
+
+def describe_user(user):
+
+    name = user.full_name
+
+    if user.username:
+        name += f" (@{user.username})"
+
+    return f"{name}, id {user.id}"
+
+
+# ============================================================
+# BOT
+# ============================================================
+
+bot = Bot(BOT_TOKEN)
 
 dp = Dispatcher()
 
-MEDIA_FILTER = F.photo | F.video | F.animation
 
-
-class Decision(CallbackData, prefix="mod"):
-    action: str  # "ok" | "no"
-    user_id: int
-    user_msg_id: int
-
-
-def moderation_keyboard(user_id: int, user_msg_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="✅ Опубликовать",
-                    callback_data=Decision(action="ok", user_id=user_id, user_msg_id=user_msg_id).pack(),
-                ),
-                InlineKeyboardButton(
-                    text="❌ Отклонить",
-                    callback_data=Decision(action="no", user_id=user_id, user_msg_id=user_msg_id).pack(),
-                ),
-            ]
-        ]
-    )
-
-
-def status_keyboard(text: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=text, callback_data="noop")]])
-
-
-def describe_user(message: Message) -> str:
-    u = message.from_user
-    name = u.full_name
-    if u.username:
-        name += f" (@{u.username})"
-    return f"{name}, id {u.id}"
-
+# ============================================================
+# /start
+# ============================================================
 
 @dp.message(CommandStart(), F.chat.type == "private")
-async def start(message: Message) -> None:
+async def start(message: Message):
+
     await message.answer(
-        "Привет! Пришли мне фото, видео или гифку — после проверки модератором "
-        "она появится в канале."
+        "Привет! Пришли мне фото, видео или гифку — "
+        "после проверки модератором она появится в канале."
     )
 
 
-@dp.message(MEDIA_FILTER, F.chat.type == "private")
-async def submission(message: Message, bot: Bot) -> None:
-    kb = moderation_keyboard(message.from_user.id, message.message_id)
-    for mod_id in MODERATOR_IDS:
+# ============================================================
+# ПОЛУЧЕНИЕ КОНТЕНТА ОТ ПОЛЬЗОВАТЕЛЯ
+# ============================================================
+
+@dp.message(
+    F.photo | F.video | F.animation,
+    F.chat.type == "private"
+)
+async def receive_media(message: Message):
+
+    keyboard = moderation_keyboard(
+        message.from_user.id,
+        message.message_id
+    )
+
+
+    for admin_id in ADMIN_IDS:
+
         try:
-            # Копия без подписи автора — именно её потом и опубликуем в канал.
+
+            # Копия без пометки «переслано».
+            # Именно её потом и опубликуем в канал.
             await bot.copy_message(
-                chat_id=mod_id,
+                chat_id=admin_id,
                 from_chat_id=message.chat.id,
                 message_id=message.message_id,
-                reply_markup=kb,
+                reply_markup=keyboard
             )
-            await bot.send_message(mod_id, f"⬆️ Прислал: {describe_user(message)}")
-        except TelegramAPIError as e:
-            log.warning("Не удалось отправить модератору %s: %s", mod_id, e)
-    await message.reply("Спасибо! Отправил на модерацию 🙌")
 
+            await bot.send_message(
+                admin_id,
+                f"⬆️ Прислал: {describe_user(message.from_user)}"
+            )
+
+        except Exception as error:
+
+            logging.error(
+                f"Не удалось отправить модератору {admin_id}: {error}"
+            )
+
+
+    await message.reply(
+        "Спасибо! Отправил на модерацию 🙌"
+    )
+
+
+# ============================================================
+# ВСЁ ОСТАЛЬНОЕ В ЛИЧКЕ
+# ============================================================
 
 @dp.message(F.chat.type == "private")
-async def other(message: Message) -> None:
-    await message.answer("Я принимаю только фото, видео и гифки.")
+async def other(message: Message):
+
+    await message.answer(
+        "Я принимаю только фото, видео и гифки."
+    )
 
 
-@dp.callback_query(Decision.filter())
-async def decide(call: CallbackQuery, callback_data: Decision, bot: Bot) -> None:
-    if call.from_user.id not in MODERATOR_IDS:
+# ============================================================
+# РЕШЕНИЕ МОДЕРАТОРА
+# ============================================================
+
+@dp.callback_query(F.data.startswith("ok:") | F.data.startswith("no:"))
+async def decide(call: CallbackQuery):
+
+    if not is_admin(call.from_user.id):
+
         await call.answer("Нет прав", show_alert=True)
         return
 
-    if callback_data.action == "ok":
+
+    action, user_id, user_message_id = call.data.split(":")
+
+
+    if action == "ok":
+
         try:
+
+            # Публикуем копию, которая пришла модератору
             await bot.copy_message(
                 chat_id=CHANNEL_ID,
                 from_chat_id=call.message.chat.id,
-                message_id=call.message.message_id,
+                message_id=call.message.message_id
             )
-        except TelegramAPIError as e:
-            log.exception("Ошибка публикации")
-            await call.answer(f"Не удалось опубликовать: {e.message}", show_alert=True)
-            return
-        status, user_text = "✅ Опубликовано", "Твой пост опубликован в канале! 🎉"
-    else:
-        status, user_text = "❌ Отклонено", "К сожалению, модератор отклонил твой пост."
 
+        except Exception as error:
+
+            logging.error(
+                f"Ошибка публикации: {error}"
+            )
+
+            await call.answer(
+                f"Не удалось опубликовать: {error}",
+                show_alert=True
+            )
+            return
+
+
+        status = "✅ Опубликовано"
+        user_text = "Твой пост опубликован в канале! 🎉"
+
+    else:
+
+        status = "❌ Отклонено"
+        user_text = "К сожалению, модератор отклонил твой пост."
+
+
+    # Меняем кнопки на статус, чтобы не нажать повторно
     try:
-        await call.message.edit_reply_markup(reply_markup=status_keyboard(status))
-    except TelegramAPIError:
+
+        await call.message.edit_reply_markup(
+            reply_markup=status_keyboard(status)
+        )
+
+    except Exception:
         pass
+
+
+    # Уведомляем автора
     try:
+
         await bot.send_message(
-            callback_data.user_id,
+            int(user_id),
             user_text,
             reply_parameters=ReplyParameters(
-                message_id=callback_data.user_msg_id, allow_sending_without_reply=True
-            ),
+                message_id=int(user_message_id),
+                allow_sending_without_reply=True
+            )
         )
-    except TelegramAPIError as e:
-        log.info("Не удалось уведомить пользователя %s: %s", callback_data.user_id, e)
+
+    except Exception as error:
+
+        logging.info(
+            f"Не удалось уведомить пользователя {user_id}: {error}"
+        )
+
+
     await call.answer(status)
+    logging.info(f"{status}: пост от {user_id}")
 
 
-@dp.callback_query(F.data == "noop")
-async def noop(call: CallbackQuery) -> None:
+@dp.callback_query(F.data == "done")
+async def already_done(call: CallbackQuery):
+
     await call.answer("Решение уже принято")
 
 
-async def main() -> None:
-    bot = Bot(BOT_TOKEN)
-    await bot.delete_webhook(drop_pending_updates=False)
-    log.info("Бот запущен, модераторы: %s, канал: %s", MODERATOR_IDS, CHANNEL_ID)
+# ============================================================
+# ЗАПУСК БОТА
+# ============================================================
+
+async def main():
+
+    logging.info(
+        "Бот запускается..."
+    )
+
     await dp.start_polling(bot)
 
 
+# ============================================================
+# START
+# ============================================================
+
 if __name__ == "__main__":
+
     asyncio.run(main())
