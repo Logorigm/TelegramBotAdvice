@@ -18,7 +18,8 @@ from aiogram.types import (
 )
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv()  # .env
+load_dotenv(".env.example")  # запасной вариант, если .env нет
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 MODERATOR_IDS = {int(x) for x in os.environ["MODERATOR_IDS"].replace(" ", "").split(",") if x}
